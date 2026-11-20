@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fine-tuning FLUX for Renaissance Art</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main>
+        <article>
+            <section>
+                <p class="eyebrow">Finetuning FLUX for Renaissance Art</p>
+                <h2>Background</h2>
+                <p>I have not tried finetuning a diffusion model before and wanted to try it out.
+                I don't like how modern diffusion models seem to generate that shiny "AI" look. What is the opposite of this look?
+                Actual good, classical art, such as renaissance paintings. It would be much cooler if I could prompt my model and it generate
+                images in the style of renaissance art as opposed to its default style.</p>
+
+                <p>In order to finetune the model of course, I would need both the model and the data to finetune it on. But once I have those two,
+                I just need a GPU to get to work and start finetuning. By the end, I will have a non-slop diffusion model that can generate artwork I actually enjoy.</p>
+            </section>
+
+            <section>
+                <h2>The Plan</h2>
+                <p>The first decision to make was what model to finetune on. After doing a bit of research, I decided to go with Flux-1.
+                It seems like a solid base model to use and although there is a newer version (Flux-2), Flux-1 is still considered to be good. Moreover, its a smaller model that will likely be easier
+                to finetune on, potentially also having more software support via finetuning libraries etc.
+                I also would use something like LoRa to finetune the model, as it is a more efficient and allow me to get away with less data and less compute, by only finetuning a small subset of the model's parameters.</p>
+
+                <h3>Dataset Acquisition</h3>
+                <p>Now I needed to figure out how I'd get my dataset. I would need set of paintings/artworks that are in the style of renaissance art, along with their corresponding captions.
+                I looked around and stumbled upon the media wiki API: <a href="https://www.mediawiki.org/wiki/API:REST_API/Get_started">https://www.mediawiki.org/wiki/API:REST_API/Get_started</a>, which I could use to pull from media wiki's database of images.
+                I had been using Gemini to help me find these resources and once I found this API I had asked it to generate 200 famous artworks I could
+                use for my dataset. I then used a script to use this API to download the images from the list provided by Gemini.</p>
+
+                <p>Now I needed succint descriptions for each of the images. I decided to use Claude Sonnet 5.5 for this. I used Openrouter's API to send the images to Claude and ask it to generate a caption for each image.
+                Once I obtained the end result of images with their corresponding captions, I had my dataset ready to go.
+                Since I would use a cloud GPU to actually run the finetuning, I uploaded the dataset to Huggingface to make it easier to access.
+                This is that dataset: <a href="https://huggingface.co/datasets/EduardoMora/renaissance-masterpieces-flux">https://huggingface.co/datasets/EduardoMora/renaissance-masterpieces-flux</a></p>
+
+                <h3>Finetuning the Model</h3>
+                <p>Now, I needed the code to actually finetune the flux-1 model. Luckily for me turns out Flux-1 has a lot of support via the huggingface diffusers library for finetuning scripts:
+                <a href="https://github.com/huggingface/diffusers/tree/main/examples/advanced_diffusion_training">https://github.com/huggingface/diffusers/tree/main/examples/advanced_diffusion_training</a>.
+                Once I installed the dependencies listed in that Readme.md, I just ran this command (on a 4090) to get my finetuning started:</p>
+
+                <pre>accelerate launch advanced_diffusion_trainiong/train_dreambooth_lora_flux_advanced.py \
+--pretrained_model_name_or_path="black-forest-labs/FLUX.1-dev" \
+--dataset_name="EduardoMora/renaissance-masterpieces-flux" \
+--image_column="image" \
+--caption_column="text" \
+--instance_prompt="renaissance masterpiece" \
+--output_dir="flux_renaissance_lora" \
+--mixed_precision="bf16" \
+--rank=32 \
+--lora_alpha=32 \
+--optimizer="adamw_bnb_8bit" \
+--learning_rate=7e-5 \
+--gradient_accumulation_steps=4 \
+--gradient_checkpointing \
+--resolution=1024 \
+--max_train_steps=60 \
+--checkpointing_steps=10 \
+--report_to="wandb" \
+--validation_prompt="cat sitting on top of an ottomon in center of old lavish, european style living room. Painting in style of renaissance masterpiece. Renaissance/visible brushwork, dark chiaroscuro lighting." \
+--validation_epochs=1 \
+--num_validation_images=1 \
+--train_batch_size=4</pre>
+
+                <p>A little reasoning behind these parameters: batch_size of 4 x 4 grad_steps = 16 inputs (image,caption pairs) per optimizer step.
+                With about 12.5 of such steps I would cover an epoch of my 200 images. So with 60 steps it would only be a little less than 5 epochs, so
+                as to not overfit the model too much.
+                I also set the learning rate to be a bit lower than the default of 1e-4, as I wanted to be a bit more conservative with my updates to the model.</p>
+
+                <p>I had initially done 1e-4 with 10 epochs and it dissolved to a blurry mess by the end. And I didn't have checkpoints initially so I had to re-ran my
+                training and just stopped it at 60 steps using the command above.</p>
+
+                <h3>Finetuning validation</h3>
+                <p>These are the validation results from the finetuning process:</p>
+                <div class="image-grid validation">
+                    <img src="photos/validation_step12.png" alt="Validation at step 12">
+                    <img src="photos/validation_step24.png" alt="Validation at step 24">
+                    <img src="photos/validation_step36.png" alt="Validation at step 36">
+                    <img src="photos/validation_step48.png" alt="Validation at step 48">
+                    <img src="photos/validation_step60.png" alt="Validation at step 60">
+                </div>
+
+                <p>I thought it kept looking better up until the last validation step, where the cat's face and background looks a bit blurry.
+                Thus, I decided to use the checkpoint at step48 as my final model.</p>
+            </section>
+
+            <section>
+                <h2>Results</h2>
+                <p>Now it was time for some fun! Prompt my model to generate renaissance masterpieces.</p>
+                <p>This was the first prompt I gave:</p>
+                <p class="prompt">"Wide-angle interior oil painting of a sprawling, high-ceilinged Renaissance library and alchemical laboratory. In the distance, an elderly scholar sits at a massive oak desk surrounded by tall bookshelves, hanging armillary spheres, rolled maps on floorboards, and tall leaded glass windows letting in side light. Full-room composition, deep spatial perspective, Renaissance masterpiece, chiaroscuro lighting, visible canvas grain"</p>
+                <p>The result:</p>
+                <img class="featured-image" src="photos/image0_renaissance_merchant.png" alt="renaissance_scholar_blurryface">
+
+                <p>The background looks neat but the face is blurred.
+                Apparently, this is partially due to the "Wide-Angle" description, making the latents focus less on the person and more on background.</p>
+
+                <p>I tweaked the prompt to be:</p>
+                <p class="prompt">"A medium-wide interior oil painting of a high-ceilinged Renaissance library. Centered in the mid-ground, a scholar is seated at a massive oak desk, rendered with clear facial detail and regal posture. The spacious room expands around him with tall bookshelves, hanging armillary spheres, rolled maps on the floorboards, and arched leaded windows. Medium-long shot, wide atmospheric depth, Renaissance masterpiece, chiaroscuro lighting, visible canvas grain."</p>
+
+                <p>So now hopefully the background is still there but the face is more clear. The result:</p>
+                <img class="featured-image" src="photos/test_renaissance_library.png" alt="renaissance_scholar">
+                <p>That is better.</p>
+
+                <p>I made a handful of more prompts and got some neat results. Here are some of them:</p>
+                <div class="image-grid">
+                    <img src="photos/test_renaissance_2.png" alt="Renaissance test result 2">
+                    <img src="photos/test_renaissance_7.png" alt="Renaissance test result 7">
+                    <img src="photos/test_renaissance_9.png" alt="Renaissance test result 9">
+                    <img src="photos/test_renaissance_10.png" alt="Renaissance test result 10">
+                </div>
+
+                <p>This portrait-style one might be my favorite:</p>
+                <img class="featured-image" src="photos/test_renaissance_1.png" alt="Renaissance test result 0">
+            </section>
+
+            <section>
+                <h2>Conclusion</h2>
+                <p>I was able to successfully finetune a diffusion model to generate renaissance-style artwork.</p>
+                <p>There are still areas for improvement, in particular many of those images with multiple subjects have little details in the faces.
+                Only when the prompt exclusively asked for a portrait does it really give much of a detailed face.
+                Perhaps with some bigger, newer open source model (Flux-2 even?) and a bigger dataset, I could get even better results.</p>
+                <p>Another cool idea could be combining multiple different styles in the dataset and finetuning the model to master all of these, to get it to generate
+                very unique artwork.</p>
+                <p>That said, I am pleased with the results and enjoyed this finetuning experience.</p>
+            </section>
+        </article>
+    </main>
+
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Expanded image">
+        <button class="lightbox-close" type="button" aria-label="Close image">&times;</button>
+        <img src="" alt="">
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
